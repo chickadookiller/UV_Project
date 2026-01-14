@@ -5,13 +5,14 @@ import matplotlib.pyplot as plt
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.deterministic import DeterministicProcess
 
-# ตั้งค่าหน้าเว็บ
-st.set_page_config(page_title="UV Index Forecast App", layout="wide")
-st.title("☀️ ระบบพยากรณ์ค่า UV Index ล่วงหน้า")
+# --- Page Config ---
+st.set_page_config(page_title="UV Index Forecast", layout="wide")
+st.title("☀️ UV Index Forecast: Specific Date Mode")
 
-# --- โหลดข้อมูล ---
-@st.cache_data # ใช้ Cache เพื่อให้แอปโหลดเร็วขึ้น
+# --- Load Data ---
+@st.cache_data
 def load_data():
+    # Make sure this filename matches exactly what is in your folder
     df = pd.read_csv("Untitled spreadsheet - Sheet1.csv", parse_dates=['time'])
     df = df.sort_values("time").drop_duplicates('time')
     df = df[['time', 'uv_index_max ()']].rename(columns={'uv_index_max ()': 'uv'})
@@ -21,61 +22,93 @@ def load_data():
 
 try:
     df = load_data()
+    last_date_in_data = df.index[-1].date()
+
+    # --- Sidebar Configuration ---
+    st.sidebar.header("Settings / ตั้งค่า")
+    st.sidebar.write(f"📅 Last data available: **{last_date_in_data}**")
     
-    # --- ส่วนของการพยากรณ์ ---
-    st.sidebar.header("ตั้งค่าการพยากรณ์")
-    days_to_forecast = st.sidebar.slider("จำนวนวันที่ต้องการพยากรณ์", 1, 30, 14)
+    # User selects a specific target date
+    target_date = st.sidebar.date_input(
+        "Select date to forecast (เลือกวันที่ต้องการพยากรณ์)", 
+        value=last_date_in_data + pd.Timedelta(days=7),
+        min_value=last_date_in_data + pd.Timedelta(days=1)
+    )
 
-    if st.sidebar.button("เริ่มการคำนวณ"):
-        with st.spinner('กำลังคำนวณ Model...'):
-            # สร้าง Fourier Terms
-            dp = DeterministicProcess(
-                index=df.index,
-                period=365,
-                fourier=2,
-                drop=True
-            )
-            exog_train = dp.in_sample()
-            exog_future = dp.out_of_sample(steps=days_to_forecast)
-
-            # Fit Model
-            model = SARIMAX(df['uv'],
-                          order=(1, 1, 1),
-                          exog=exog_train,
-                          seasonal_order=(0, 0, 0, 0))
-            model_fit = model.fit(disp=False)
-
-            # Forecast
-            forecast = model_fit.forecast(steps=days_to_forecast, exog=exog_future)
-            
-            # เตรียมข้อมูลสำหรับการแสดงผล
-            forecast_df = pd.DataFrame({
-                'Date': exog_future.index,
-                'Predicted UV': forecast.values
-            })
-
-            # --- แสดงผลหน้าเว็บ ---
-            col1, col2 = st.columns([2, 1])
-
-            with col1:
-                st.subheader(f"กราฟพยากรณ์ {days_to_forecast} วันข้างหน้า")
-                fig, ax = plt.subplots(figsize=(10, 5))
-                recent_data = df.iloc[-60:] # ดูย้อนหลัง 60 วัน
-                ax.plot(recent_data.index, recent_data['uv'], label='Actual UV', color='black', alpha=0.5)
-                ax.plot(forecast_df['Date'], forecast_df['Predicted UV'], label='Forecast', color='red', marker='o')
-                ax.legend()
-                st.pyplot(fig)
-
-            with col2:
-                st.subheader("ข้อมูลตาราง")
-                st.write(forecast_df)
+    if st.sidebar.button("Calculate Forecast (เริ่มคำนวณ)"):
+        
+        # Calculate how many steps (days) from last data point to target date
+        days_to_forecast = (target_date - last_date_in_data).days
+        
+        if days_to_forecast <= 0:
+            st.error("Please select a date after the last available data point.")
+        else:
+            with st.spinner(f'Forecasting for {target_date} ({days_to_forecast} days ahead)...'):
                 
-                # ปุ่มดาวน์โหลด CSV
-                csv = forecast_df.to_csv(index=False).encode('utf-8')
-                st.download_button("Download CSV", csv, "uv_forecast.csv", "text/csv")
+                # --- Model Setup ---
+                dp = DeterministicProcess(
+                    index=df.index,
+                    period=365,
+                    fourier=2,
+                    drop=True
+                )
+                exog_train = dp.in_sample()
+                exog_future = dp.out_of_sample(steps=days_to_forecast)
+
+                # Fit SARIMAX
+                model = SARIMAX(df['uv'],
+                                order=(1, 1, 1),
+                                exog=exog_train,
+                                seasonal_order=(0, 0, 0, 0))
+                model_fit = model.fit(disp=False)
+
+                # Forecast
+                forecast = model_fit.forecast(steps=days_to_forecast, exog=exog_future)
+                
+                # Create Result DataFrame
+                forecast_df = pd.DataFrame({
+                    'Date': exog_future.index,
+                    'Predicted UV': forecast.values
+                })
+                
+                # Get the specific value for the target date
+                target_value = forecast_df.iloc[-1]['Predicted UV']
+
+                # --- Display Results ---
+                
+                # Metric Highlight
+                st.metric(label=f"Predicted UV Index on {target_date}", value=f"{target_value:.2f}")
+
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    st.subheader("Forecast Trend")
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    
+                    # Plot last 60 days of actual data
+                    recent_data = df.iloc[-60:]
+                    ax.plot(recent_data.index, recent_data['uv'], label='Actual History', color='gray', alpha=0.5)
+                    
+                    # Plot the forecast path
+                    ax.plot(forecast_df['Date'], forecast_df['Predicted UV'], label='Forecast Path', color='blue', linestyle='--')
+                    
+                    # Highlight the specific target date
+                    ax.scatter([forecast_df.iloc[-1]['Date']], [target_value], color='red', s=100, zorder=5, label='Target Date')
+
+                    ax.set_title(f"Trajectory to {target_date}")
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    st.pyplot(fig)
+
+                with col2:
+                    st.subheader("Forecast Data")
+                    st.dataframe(forecast_df.tail(10)) # Show last 10 days leading up to target
+                    
+                    csv = forecast_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download CSV", csv, f"uv_forecast_{target_date}.csv", "text/csv")
+
     else:
-        st.info("กดปุ่ม 'เริ่มการคำนวณ' ที่แถบด้านซ้ายเพื่อดูผลพยากรณ์")
+        st.info("Select a date in the sidebar and press 'Calculate Forecast'.")
 
 except Exception as e:
-    st.error(f"เกิดข้อผิดพลาด: {e}")
-    st.warning("กรุณาตรวจสอบว่ามีไฟล์ 'Untitled spreadsheet - Sheet1.csv' อยู่ในเครื่องมือส่งออก")
+    st.error(f"Error: {e}")
